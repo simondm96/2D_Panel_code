@@ -12,6 +12,7 @@ import numpy as np
 from Panel_blade import Panel, Plate
 import matplotlib.pyplot as plt
 from matplotlib import cm
+import types
 
 def naca_camber(x, m, p):
     """
@@ -28,9 +29,9 @@ def naca_camber(x, m, p):
     
     return camber
 
-def flap(N, xf, af, profile = None):
+def flap(N, xf, af, profile = None, profileargs = None):
     """
-    Creates a flat plate with a flap hinged at xf with an angle of af (in degrees)
+    Creates a flat plate with a flap hinged at 'xf' with an angle of 'af' (in degrees)
     It will be discretised in N panels
     
     Inputs
@@ -40,7 +41,7 @@ def flap(N, xf, af, profile = None):
     xf = float, nndimensional location of the flap
     af = float, angle of the flap in degrees, downward is considered positive
     
-    TODO Add the profile option to create a camberes airfoil with flap
+    If a profile function is given the needed arguments can be given in profileargs
     """
     af *= np.pi/180
     N += 1 #One point more than the amount of panels is needed
@@ -50,10 +51,23 @@ def flap(N, xf, af, profile = None):
     Nflap = N - Nflat
     flat = np.linspace(0,xf, Nflat+1)
     flap0 = np.linspace(xf, 1, Nflap)
-    flap = np.cos(af)*(flap0-flap0[0])
+    if type(profile) == type(None):
+        flap = np.cos(af)*(flap0-flap0[0])
+        y_flat = np.zeros(Nflat+1)
+        y_flap = -np.sin(af)*(flap0-flap0[0])
+    elif type(profile) == types.FunctionType:
+        if type(profileargs) == type(None):
+            flap = np.cos(af)*(flap0-flap0[0])
+            y_flat = profile(flat, *profileargs)
+            y_flap = profile(flap0, *profileargs)-np.sin(af)*(flap0-flap0[0])
+        else:
+            flap = np.cos(af)*(flap0-flap0[0])
+            y_flat = profile(flat)
+            y_flap = profile(flap0)-np.sin(af)*(flap0-flap0[0])
+    else:
+        raise ValueError("{} is not a function or 'None'".format(profile))
+        
     plate[:,0] = np.concatenate((flat, flap[1:]+flap0[0]))
-    y_flat = np.zeros(Nflat+1)
-    y_flap = -np.sin(af)*(flap0-flap0[0])
     plate[:,1] = np.concatenate((y_flat, y_flap[1:]))
     return plate
     
