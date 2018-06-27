@@ -9,8 +9,63 @@ Created on Mon Jun 11 09:28:15 2018
 """
 
 import numpy as np
+from numpy.linalg import norm, solve
 
-
+class Vortex:
+    """
+    Class for a discrete vortex
+    """
+    
+    def __init__(self, point, strength, core = False):
+        """
+        2D option: specify the radius of the vortex core
+        """
+        self.point = point
+        self.strength = strength
+        self.core = core
+        if core:
+            self.omega = self.strength/(2*np.pi*core**2)
+        
+    def velind(self, point):
+        """
+        Calculates the induced velocity of the vortex on a point
+        """
+        
+        point = np.asarray(point)
+        relpos = point-self.point
+        r = norm(relpos)
+        mat = np.array([[0,1],[-1,0]])
+        #Check whether we have a 2D vortex
+        if self.core:
+            if norm(relpos<self.core): #is it in the core?
+                v_ind = self.strength/(2*np.pi*(self.core**2))*mat.dot(relpos)
+            else:
+                v_ind = self.strength/(2*np.pi*r**2)*mat.dot(relpos)
+        else:
+           v_ind = self.strength/(2*np.pi*r**2)*mat.dot(relpos) 
+        
+        return v_ind
+        
+class Wake:
+    """
+    Class for a wake which consists of multiple vortices
+    """
+    
+    def __init__(self, vortexlist = None):
+        if type(vortexlist) == type(None):
+            self.vortices = []
+        else:
+            self.vortices = vortexlist
+            
+    def add_vortex(self, vortex):
+        self.vortices.append(vortex)
+        
+    def calculate_velind(self, point):
+        v_ind = 0
+        for vortex in self.vortices:
+            v_ind += vortex.velind(point)
+        return v_ind
+    
 class Panel:
     """
     Class for a single panel
@@ -23,47 +78,43 @@ class Panel:
         
         self.end = end
         
-        self.strength = strength
-        
         vect = end-start
         
         self.vpoint = start + 0.25*(vect)
         
         self.cpoint = start + 0.75*(vect)
         
+        self.vortex = Vortex(self.vpoint, strength)
+        
         beta = np.arctan2(vect[1],vect[0])
         
         self.normal = np.array([-np.sin(beta), np.cos(beta)])
         
+        self.tangential = np.array([np.cos(beta), np.sin(beta)])
+        
         self.length = np.linalg.norm(vect)
     
-    def velind(self, point, r = 0.005):
+    def velind(self, point):
         '''
         Calculate the induced velocity at a point
         '''
-        point = np.asarray(point)
-        relpos = point-self.vpoint
-        
-        r_sq = np.linalg.norm(relpos)**2
-        mat = np.array([[0,1],[-1,0]])
-        
-        v_ind_r = self.strength/(2*np.pi*r_sq)*mat.dot(relpos)
-        #v_ind_R = self.strength/(2*np.pi*(r**2))*mat.dot(relpos)
-        return v_ind_r
+        return self.vortex.velind(point)
         
        
 class Plate:
     """
-    Class for a plate
+    Class for a plate in a flow which can be unsteady
     """
     
-    def __init__(self, coordlist, connect = False):
-        
+    def __init__(self, coordlist, connect = False, unsteady = False, dt = 0.1, vortexpoint = None):
+        """
+        If unsteady is true a vortexpoint has to be given
+        """
         panellist = []
         if connect:
             end = 0
         else:
-            end=1
+            end = 1
         
         for i in range(len(coordlist)-end):
             panel = Panel(coordlist[i], coordlist[i+1], 1)
@@ -72,7 +123,13 @@ class Plate:
         self.panels = panellist
         self.dim = len(panellist)
         self.Construct_matrix()
-        
+        if unsteady: #Do all the nescesarry steps for the 
+            if type(vortexpoint) == type(None):
+                raise RuntimeError("Please define a vortexpoint in the input")
+            self.Construct_unsteady(vortexpoint)
+            self.dt = dt
+            self.vortexpoint = vortexpoint
+
     def Construct_matrix(self):
         """
         Construct the influence coefficient matrix
@@ -84,16 +141,41 @@ class Plate:
                 A[i,j] = np.dot(panel_j.velind(panel_i.cpoint),panel_i.normal)
         self.influences = A
         
-    def solve_circs(self, V):
+    def Construct_unsteady(self, vortexpoint):
         """
-        Solve for the circulaations for a certain velocity
+        Construct the influence coefficient matrix for the unsteady cases
+        vortexpoint is the unknown vortex'location
         """
-        V = np.asarray(V)
-        B = np.zeros(self.dim)
+        #extending the influence matrix
+        A = np.ones((self.dim + 1, self.dim + 1))
+        A[:-1,:-1] = self.influences
+        u_vortex = Vortex(vortexpoint, 1)
         for i, panel in enumerate(self.panels):
-            B[i] = np.dot(-V, panel.normal)
+            A[i,-1] = u_vortex.velind(panel.cpoint)
+        self.u_influences = A
         
-        circs = np.linalg.solve(self.influences, B)
+    def solve_circs(self, V, unsteady = False, wake = None, prevcirc = None,  append = False):
+        """
+        Solve for the circulations for a certain velocity
+        """
+        
+        V = np.asarray(V)
+        if unsteady:
+            B = np.zeros(self.dim+1)
+            B[-1] = prevcirc
+            
+            for i, panel in enumerate(self.panels):
+                wake_vel = wake.calculate_velind(panel.cpoint)
+                B[i] = np.dot(-(V+wake_vel), panel.normal)
+            circs = solve(self.u_influences, B)
+        else:
+            B = np.zeros(self.dim)
+            for i, panel in enumerate(self.panels):
+                B[i] = np.dot(-V, panel.normal)
+            
+            circs = solve(self.influences, B)
+        if append:
+            self.circs = circs
         return circs
         
     def c_lift(self, V):
@@ -112,12 +194,12 @@ class Plate:
         """
         try:
             for i, panel in enumerate(self.panels):
-                panel.strength = self.circs[i]
+                panel.vortex.strength = self.circs[i]
             
         except AttributeError:
            circs = self.solve_circs(V)
            for i, panel in enumerate(self.panels):
-               panel.strength = circs[i] 
+               panel.vortex.strength = circs[i] 
         
     def pressurefield(self, V, rho, region, velfield = False, resolution = 0.01):
         """
@@ -147,7 +229,7 @@ class Plate:
         Press = np.zeros((self.dim,2))
         V_n = np.linalg.norm(V)
         for i, panel in enumerate(self.panels):
-            Press[i] = V_n*rho*panel.strength/panel.length*panel.normal
+            Press[i] = V_n*rho*panel.vortex.strength/panel.length*panel.normal
         
         return Press
     
@@ -173,7 +255,7 @@ class Plate:
                     ind_vel += panel.velind([x,y])
                 velocity[j,i,:] += ind_vel+V
                 
-        return (xcoords, ycoords),velocity
+        return (xcoords, ycoords), velocity
 
         
 
@@ -182,5 +264,5 @@ class Plate:
         Sets all circulations to 1
         """
         for panel in self.panels:
-            panel.strength = 1
+            panel.vortex.strength = 1
         

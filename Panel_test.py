@@ -9,7 +9,7 @@ Testing ground for Panel code
 """
 
 import numpy as np
-from Panel_blade import Panel, Plate
+from Panel_blade import Panel, Plate, Vortex
 import matplotlib.pyplot as plt
 from matplotlib import cm
 import types
@@ -76,14 +76,14 @@ def flap(N, xf, af, profile = None, profileargs = None):
 rho = 1.225
 data = np.genfromtxt('naca2412.dat', skip_header=1)
 
-N_panels = 10
+N_panels = 15
 x = np.linspace(0,1,num = N_panels+1)
 coordlist_test = np.zeros((N_panels+1,2))
 coordlist_test[:,0] = x
 coordlist_test[:,1] = naca_camber(x,2,4)
-coords = flap(N_panels, 0.75, 30)
+coords = flap(N_panels, 0.75, 20)
 
-alpha = 5*np.pi/180
+alpha = 2*np.pi/180
 V = 1*np.array([np.cos(alpha), np.sin(alpha)])
 foil = Plate(coords)
 cl_xfoil = 0.4969
@@ -98,7 +98,7 @@ for i, panel in enumerate(foil.panels):
 
 print(foil.c_lift(V))
 
-circs = foil.solve_circs(V)
+circs = foil.solve_circs(V, append = True)
 foil.apply_circs(V)
 Press = foil.pressurevectors(V, rho)
 
