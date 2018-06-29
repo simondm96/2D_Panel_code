@@ -34,10 +34,12 @@ class Vortex:
         point = np.asarray(point)
         relpos = point-self.point
         r = norm(relpos)
+        if np.isclose(r, 0): #Check whether r is zero so no infinities are present
+            return 0
         mat = np.array([[0,1],[-1,0]])
         #Check whether we have a 2D vortex
         if self.core:
-            if norm(relpos<self.core): #is it in the core?
+            if r<self.core: #is it in the core?
                 v_ind = self.strength/(2*np.pi*(self.core**2))*mat.dot(relpos)
             else:
                 v_ind = self.strength/(2*np.pi*r**2)*mat.dot(relpos)
@@ -58,13 +60,36 @@ class Wake:
             self.vortices = vortexlist
             
     def add_vortex(self, vortex):
+        """
+        Wrapper around the built-in list append method to add a vorcex to the wake
+        """
         self.vortices.append(vortex)
         
-    def calculate_velind(self, point):
+    def velind(self, point):
+        """
+        Calculates the induced velocity due to the wake on a point
+        """
         v_ind = 0
         for vortex in self.vortices:
             v_ind += vortex.velind(point)
         return v_ind
+    
+    def wake_rollup(self, plate, pos, dt = 0.1):
+        """
+        Calculates the movement of the wake due to the self-induced velocities 
+        and those from an airfoil (plate) at a position pos from the 
+        starting point
+        """
+        #Calcuate induced velocities
+        vellist = []
+        for vortex in self.vortices:
+            v_ind = 0
+            v_ind += self.velind(vortex.point)
+            v_ind += plate.vel_ind(vortex.point-pos)
+            vellist.append(v_ind)
+        #Update positions
+        for i, vortex in enumerate(self.vortices):
+            vortex.point += vellist[i]*dt
     
 class Panel:
     """
@@ -106,7 +131,7 @@ class Plate:
     Class for a plate in a flow which can be unsteady
     """
     
-    def __init__(self, coordlist, connect = False, unsteady = False, dt = 0.1, vortexpoint = None):
+    def __init__(self, coordlist, connect = False, unsteady = False, vortexpoint = None, dt = 0.1):
         """
         If unsteady is true a vortexpoint has to be given
         """
@@ -123,13 +148,29 @@ class Plate:
         self.panels = panellist
         self.dim = len(panellist)
         self.Construct_matrix()
-        if unsteady: #Do all the nescesarry steps for the 
+        if unsteady: #Do all the nescesarry steps for the unsteady part
             if type(vortexpoint) == type(None):
                 raise RuntimeError("Please define a vortexpoint in the input")
             self.Construct_unsteady(vortexpoint)
-            self.dt = dt
             self.vortexpoint = vortexpoint
+            self.dt = 0.1
 
+    def Update_geo(self, coordlist, connect = False):
+        """
+        Updates the geometry of the plate
+        """
+        panellist = []
+        if connect:
+            end = 0
+        else:
+            end = 1
+        for i in range(len(coordlist)-end):
+            panel = Panel(coordlist[i], coordlist[i+1], 1)
+            panellist.append(panel)
+        self.panels = panellist
+        self.dim = len(panellist)
+        self.Construct_matrix()
+        
     def Construct_matrix(self):
         """
         Construct the influence coefficient matrix
@@ -151,10 +192,10 @@ class Plate:
         A[:-1,:-1] = self.influences
         u_vortex = Vortex(vortexpoint, 1)
         for i, panel in enumerate(self.panels):
-            A[i,-1] = u_vortex.velind(panel.cpoint)
+            A[i,-1] = np.dot(u_vortex.velind(panel.cpoint), panel.normal)
         self.u_influences = A
         
-    def solve_circs(self, V, unsteady = False, wake = None, prevcirc = None,  append = False):
+    def solve_circs(self, V, unsteady = False, wake = None, prevcirc = None, rot = None, append = False):
         """
         Solve for the circulations for a certain velocity
         """
@@ -162,11 +203,11 @@ class Plate:
         V = np.asarray(V)
         if unsteady:
             B = np.zeros(self.dim+1)
-            B[-1] = prevcirc
-            
+            B[-1] = np.sum(prevcirc)
+            V_tot = V + rot.T
             for i, panel in enumerate(self.panels):
-                wake_vel = wake.calculate_velind(panel.cpoint)
-                B[i] = np.dot(-(V+wake_vel), panel.normal)
+                wake_vel = wake.velind(panel.cpoint)
+                B[i] = np.dot(-(V_tot[i]+wake_vel), panel.normal)
             circs = solve(self.u_influences, B)
         else:
             B = np.zeros(self.dim)
@@ -182,12 +223,41 @@ class Plate:
         """
         Calculate the lift
         """
-        V = np.asarray(V)
-        V_norm = np.linalg.norm(V)
-        circs = self.solve_circs(V)
+        try:
+            circs = self.circs[:-1]
+            
+        except AttributeError:
+            V = np.asarray(V)
+            V_norm = np.linalg.norm(V)
+            circs = self.solve_circs(V)
         return np.sum(V_norm*circs)*2
         
+    def lift(self, V, rho, unsteady = False, wake = None, prevcirc = None, rot = None):
+        """
+        Calculates the lift force by calling the pressure vectors function
+        """
+        plist = []
+        if unsteady:
+            V = V + rot.T
         
+        coordv = np.array([0,1])
+        try:
+            if unsteady:
+                circs = self.circs[:-1]
+            else:
+                circs = self.circs
+        except AttributeError:
+            if unsteady:
+                circs = self.solve_circs(V, unsteady = unsteady, wake = wake, prevcirc = prevcirc, rot = rot)[:,-1]
+            else:
+                circs = self.solve_circs(V)
+        for i, panel in enumerate(self.panels):
+            dp = rho* (np.dot(V,panel.tangential)*circs[i]/panel.length + (np.sum(circs[:i+1])-np.sum(prevcirc[:i+1]))/self.dt)
+            plist.append(dp*panel.length*np.dot(panel.normal, coordv))
+        plist = np.array(plist)
+        
+        return np.sum(plist)
+    
     def apply_circs(self,V):
         """
         Applies the circulations to the panels in panellist
@@ -257,7 +327,14 @@ class Plate:
                 
         return (xcoords, ycoords), velocity
 
-        
+    def vel_ind(self, point):
+        """
+        Calculates the induced velocity from the whole plate on a point
+        """
+        v_ind = 0
+        for panel in self.panels:
+            v_ind += panel.velind(point)
+        return v_ind
 
     def unit_circs(self):
         """
